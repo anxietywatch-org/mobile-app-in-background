@@ -8,7 +8,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
-import java.time.Instant
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 object FogNativeSync {
     const val API_BASE = "https://api.mangoon.xyz"
@@ -138,13 +141,46 @@ object FogNativeSync {
         else -> "unknown"
     }
 
+    /**
+     * Convierte a ISO-8601 UTC (p. ej. "2026-08-10T21:00:30Z") un valor del
+     * sobre: epoch millis o string ISO con o sin fracción de segundo. Se usa
+     * java.text (no java.time) porque java.time solo existe desde API 26 y el
+     * minSdk es 24; java.time lanzaría NoClassDefFoundError en Android 7.x.
+     */
     private fun iso(value: Any?): String? = runCatching {
         when (value) {
-            is Number -> Instant.ofEpochMilli(value.toLong()).toString()
-            is String -> Instant.parse(value).toString()
+            is Number -> UTC_FORMAT.format(Date(value.toLong()))
+            is String -> UTC_FORMAT.format(Date(isoMillis(value)))
             else -> null
         }
     }.getOrNull()
+
+    private val UTC_FORMAT: SimpleDateFormat =
+        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+            isLenient = false
+        }
+
+    private val ISO_PATTERN =
+        Regex("""^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})$""")
+
+    private fun isoMillis(value: String): Long {
+        val match = ISO_PATTERN.matchEntire(value)
+            ?: throw IllegalArgumentException("no es ISO-8601")
+        val offset = match.groupValues[3]
+        val zone = if (offset == "Z") TimeZone.getTimeZone("UTC") else TimeZone.getTimeZone("GMT$offset")
+        val base = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply {
+            this.timeZone = zone
+            isLenient = false
+        }.parse(match.groupValues[1]).time
+        val fraction = match.groupValues[2]
+        val fractionMillis = if (fraction.isEmpty()) {
+            0L
+        } else {
+            fraction.substring(1).padEnd(3, '0').take(3).toLong()
+        }
+        return base + fractionMillis
+    }
 
     private fun putReason(target: JSONObject, source: JSONObject) {
         source.optString("reason").takeIf(String::isNotBlank)?.let { target.put("reason", it) }
